@@ -1,15 +1,21 @@
 /**
  * netlify/functions/generate-barcode.js
  *
- * Given one or more ApparelMagic purchase order numbers, fetches each PO's
- * line items and joins in category + retail price from the products endpoint,
- * returning rows ready for the barcode sheet (same shape the old CSV export used).
+ * Given one or more ApparelMagic purchase order and/or sales order numbers,
+ * fetches each document's line items and joins in category + retail price
+ * from the products endpoint, returning rows ready for the barcode sheet
+ * (same shape the old CSV export used).
  *
  * Auth: GET params time=<unix_ts>&token=<APPAREL_MAGIC_TOKEN>
  * Subdomain: APPAREL_MAGIC_SUBDOMAIN (bare subdomain, e.g. "kohindustries")
  */
 
 const MIN_PAGE_SIZE = 10;
+
+const DOC_TYPES = {
+  po: { endpoint: 'purchase_orders', idField: 'purchase_order_id', itemsField: 'purchase_order_items', label: 'PO' },
+  so: { endpoint: 'orders', idField: 'order_id', itemsField: 'order_items', label: 'SO' },
+};
 
 function getEnv() {
   const token = process.env.APPAREL_MAGIC_TOKEN;
@@ -53,23 +59,30 @@ async function mapWithConcurrency(items, limit, fn) {
   return results;
 }
 
+function parseDocNumbers(raw) {
+  return (raw || []).map((n) => String(n).trim()).filter(Boolean);
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: JSON.stringify({ error: 'Method not allowed' }) };
   }
 
-  let poNumbers;
+  let requestedDocs; // [{ type: 'po'|'so', number: string }]
   try {
     const body = JSON.parse(event.body || '{}');
-    poNumbers = (body.poNumbers || [])
-      .map((n) => String(n).trim())
-      .filter(Boolean);
+    const poNumbers = parseDocNumbers(body.poNumbers);
+    const soNumbers = parseDocNumbers(body.soNumbers);
+    requestedDocs = [
+      ...poNumbers.map((number) => ({ type: 'po', number })),
+      ...soNumbers.map((number) => ({ type: 'so', number })),
+    ];
   } catch {
     return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON body' }) };
   }
 
-  if (!poNumbers.length) {
-    return { statusCode: 400, body: JSON.stringify({ error: 'poNumbers array required' }) };
+  if (!requestedDocs.length) {
+    return { statusCode: 400, body: JSON.stringify({ error: 'poNumbers and/or soNumbers array required' }) };
   }
 
   let token, subdomain;
@@ -79,31 +92,32 @@ exports.handler = async (event) => {
     return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
   }
 
-  const poResults = [];
+  const docResults = [];
   const allItems = [];
 
   try {
-    for (const poNumber of poNumbers) {
-      const data = await amGet(subdomain, token, 'purchase_orders', {
-        purchase_order_id: poNumber,
+    for (const { type, number } of requestedDocs) {
+      const cfg = DOC_TYPES[type];
+      const data = await amGet(subdomain, token, cfg.endpoint, {
+        [cfg.idField]: number,
         'pagination[page_size]': MIN_PAGE_SIZE,
       });
       const rows = data.response || [];
-      const po = rows.find((r) => String(r.purchase_order_id) === poNumber);
+      const doc = rows.find((r) => String(r[cfg.idField]) === number);
 
-      if (!po) {
-        poResults.push({ poNumber, found: false, itemCount: 0 });
+      if (!doc) {
+        docResults.push({ type, number, found: false, itemCount: 0 });
         continue;
       }
 
-      const items = po.purchase_order_items || [];
-      poResults.push({ poNumber, found: true, itemCount: items.length, vendorName: po.vendor_name || null });
+      const items = doc[cfg.itemsField] || [];
+      docResults.push({ type, number, found: true, itemCount: items.length });
       for (const item of items) {
-        allItems.push({ ...item, _poNumber: poNumber });
+        allItems.push({ ...item, _docType: type, _docNumber: number });
       }
     }
 
-    // Dedupe by sku_id across the selected PO(s) — barcode sheet is one row per SKU.
+    // Dedupe by sku_id across the selected document(s) — barcode sheet is one row per SKU.
     const bySkuId = new Map();
     for (const item of allItems) {
       if (item.sku_id && !bySkuId.has(item.sku_id)) bySkuId.set(item.sku_id, item);
@@ -138,9 +152,9 @@ exports.handler = async (event) => {
 
     return {
       statusCode: 200,
-      body: JSON.stringify({ rows, poResults }),
+      body: JSON.stringify({ rows, docResults }),
     };
   } catch (err) {
-    return { statusCode: 502, body: JSON.stringify({ error: err.message, poResults }) };
+    return { statusCode: 502, body: JSON.stringify({ error: err.message, docResults }) };
   }
 };

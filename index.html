@@ -161,12 +161,15 @@ body{
     <button id="csvModeBtn" onclick="setMode('csv')">Upload CSV</button>
   </div>
 
-  <div class="status-line" id="statusLine">Enter one or more PO numbers to begin</div>
+  <div class="status-line" id="statusLine">Enter PO and/or SO numbers to begin</div>
   <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
 
   <div id="amRow" style="width:100%;margin-bottom:.75rem">
     <div class="name-row">
       <input type="text" id="poInput" placeholder="PO numbers, e.g. 4821, 4822">
+    </div>
+    <div class="name-row">
+      <input type="text" id="soInput" placeholder="SO numbers, e.g. 5091, 5092">
     </div>
     <button class="pill-btn full" id="fetchBtn" onclick="fetchFromAM()">→ Fetch from ApparelMagic</button>
   </div>
@@ -213,7 +216,7 @@ function setMode(m){
   document.getElementById('csvModeBtn').classList.toggle('active',m==='csv');
   document.getElementById('amRow').style.display=m==='am'?'block':'none';
   document.getElementById('uploadRow').style.display=m==='csv'?'flex':'none';
-  setStatus(m==='am'?'Enter one or more PO numbers to begin':'Upload a CSV file to begin',0);
+  setStatus(m==='am'?'Enter PO and/or SO numbers to begin':'Upload a CSV file to begin',0);
 }
 
 function parseCSV(txt){
@@ -249,38 +252,40 @@ function showLoadedData(label){
 }
 
 async function fetchFromAM(){
-  const raw=document.getElementById('poInput').value.trim();
-  if(!raw){ showMsg('error','Enter at least one PO number'); return; }
-  const poNumbers=[...new Set(raw.split(/[,\s]+/).map(s=>s.trim()).filter(Boolean))];
+  const splitNumbers=raw=>[...new Set(raw.trim().split(/[,\s]+/).map(s=>s.trim()).filter(Boolean))];
+  const poNumbers=splitNumbers(document.getElementById('poInput').value);
+  const soNumbers=splitNumbers(document.getElementById('soInput').value);
+  if(!poNumbers.length && !soNumbers.length){ showMsg('error','Enter at least one PO or SO number'); return; }
   document.getElementById('fetchBtn').disabled=true;
   document.getElementById('msgBox').textContent='';
-  setStatus('Fetching PO(s) from ApparelMagic...',20);
+  setStatus('Fetching from ApparelMagic...',20);
   try{
     const res=await fetch('/.netlify/functions/generate-barcode',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({poNumbers})
+      body:JSON.stringify({poNumbers,soNumbers})
     });
     const body=await res.json();
     if(!res.ok) throw new Error(body.error||'Request failed');
 
     data=body.rows;
-    if(!data.length) throw new Error('No line items found on the given PO(s)');
+    if(!data.length) throw new Error('No line items found on the given PO/SO number(s)');
 
-    const notFound=body.poResults.filter(r=>!r.found).map(r=>r.poNumber);
-    const found=body.poResults.filter(r=>r.found).map(r=>r.poNumber);
+    const notFound=body.docResults.filter(r=>!r.found);
+    const found=body.docResults.filter(r=>r.found);
+    const label=type=>type==='po'?'PO':'SO';
 
-    document.getElementById('fileName').value=`PO_${found.join('_')}_Barcode_File`;
-    showLoadedData('PO '+found.join(', '));
+    document.getElementById('fileName').value=`${found.map(r=>label(r.type)+'_'+r.number).join('_')}_Barcode_File`;
+    showLoadedData(found.map(r=>label(r.type)+' '+r.number).join(', '));
     setStatus('Ready to generate',40);
 
     if(notFound.length){
-      showMsg('error','⚠ PO(s) not found: '+notFound.join(', ')+' — proceeding with the rest');
+      showMsg('error','⚠ Not found: '+notFound.map(r=>label(r.type)+' '+r.number).join(', ')+' — proceeding with the rest');
     }else{
       document.getElementById('msgBox').textContent='';
     }
   }catch(err){
-    setStatus('Enter one or more PO numbers to begin',0);
+    setStatus('Enter PO and/or SO numbers to begin',0);
     showMsg('error','Could not fetch from ApparelMagic: '+err.message);
   }finally{
     document.getElementById('fetchBtn').disabled=false;
@@ -324,9 +329,10 @@ function clearFile(){
   document.getElementById('genRow').style.display='none';
   document.getElementById('fileInput').value='';
   document.getElementById('poInput').value='';
+  document.getElementById('soInput').value='';
   document.getElementById('genBtn').disabled=false;
   document.getElementById('msgBox').textContent='';
-  setStatus(mode==='am'?'Enter one or more PO numbers to begin':'Upload a CSV file to begin',0);
+  setStatus(mode==='am'?'Enter PO and/or SO numbers to begin':'Upload a CSV file to begin',0);
 }
 
 async function generate(){
