@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Barcode Sheet Generator — WNDRR</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>▥</text></svg>">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -134,6 +135,30 @@ body{
 .msg{font-size:12px;text-align:center;margin-top:.5rem;color:#aaa}
 .msg.err{color:#e05050}
 .msg.ok{color:#3bb88a}
+.coll-toggle{
+  display:flex;align-items:center;justify-content:space-between;
+  width:100%;margin-bottom:.75rem;
+  padding:.55rem 1.1rem;
+  border:1px solid #ddd;border-radius:99px;background:#fff;
+  font-size:13px;color:#888;font-family:inherit;cursor:pointer;
+}
+.coll-toggle.has-sel{color:#111}
+.coll-panel{
+  width:100%;margin-bottom:.75rem;
+  border:1px solid #ddd;border-radius:14px;overflow:hidden;
+}
+.coll-panel input[type=text]{
+  width:100%;border:none;border-bottom:1px solid #eee;outline:none;
+  padding:.6rem 1rem;font-size:13px;font-family:inherit;
+}
+.coll-list{max-height:220px;overflow-y:auto;padding:.35rem 0}
+.coll-item{
+  display:flex;align-items:center;gap:10px;
+  padding:.4rem 1rem;font-size:13px;color:#333;cursor:pointer;
+}
+.coll-item:hover{background:#f7f7f7}
+.coll-item .cnt{margin-left:auto;font-size:11px;color:#bbb}
+.coll-empty{padding:.75rem 1rem;font-size:12px;color:#aaa;text-align:center}
 .file-loaded-row{
   display:flex;align-items:center;gap:8px;
   padding:.4rem .9rem .4rem 1.1rem;
@@ -157,11 +182,11 @@ body{
   <div class="app-title">Barcode Sheet Generator</div>
 
   <div class="mode-toggle" id="modeToggle">
-    <button id="amModeBtn" class="active" onclick="setMode('am')">ApparelMagic PO</button>
+    <button id="amModeBtn" class="active" onclick="setMode('am')">ApparelMagic</button>
     <button id="csvModeBtn" onclick="setMode('csv')">Upload CSV</button>
   </div>
 
-  <div class="status-line" id="statusLine">Enter PO and/or SO numbers to begin</div>
+  <div class="status-line" id="statusLine">Enter PO/SO numbers or pick collections to begin</div>
   <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
 
   <div id="amRow" style="width:100%;margin-bottom:.75rem">
@@ -170,6 +195,13 @@ body{
     </div>
     <div class="name-row">
       <input type="text" id="soInput" placeholder="SO numbers, e.g. 5091, 5092">
+    </div>
+    <button type="button" class="coll-toggle" id="collToggle" onclick="toggleCollPanel()">
+      <span id="collToggleLabel">Collections (optional)</span><span>▾</span>
+    </button>
+    <div class="coll-panel" id="collPanel" style="display:none">
+      <input type="text" id="collSearch" placeholder="Search collections" oninput="renderCollections()">
+      <div class="coll-list" id="collList"></div>
     </div>
     <button class="pill-btn full" id="fetchBtn" onclick="fetchFromAM()">→ Fetch from ApparelMagic</button>
   </div>
@@ -216,7 +248,7 @@ function setMode(m){
   document.getElementById('csvModeBtn').classList.toggle('active',m==='csv');
   document.getElementById('amRow').style.display=m==='am'?'block':'none';
   document.getElementById('uploadRow').style.display=m==='csv'?'flex':'none';
-  setStatus(m==='am'?'Enter PO and/or SO numbers to begin':'Upload a CSV file to begin',0);
+  setStatus(m==='am'?'Enter PO/SO numbers or pick collections to begin':'Upload a CSV file to begin',0);
 }
 
 function parseCSV(txt){
@@ -251,41 +283,120 @@ function showLoadedData(label){
   document.getElementById('genRow').style.display='block';
 }
 
+let collections=null; // [{name,productCount}] once loaded
+let selectedCollections=new Set();
+
+async function amPost(payload){
+  const res=await fetch('/.netlify/functions/generate-barcode',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload)
+  });
+  let body;
+  try{ body=await res.json(); }catch{ throw new Error('Unexpected response (status '+res.status+')'); }
+  if(!res.ok) throw new Error(body.error||'Request failed');
+  return body;
+}
+
+async function toggleCollPanel(){
+  const panel=document.getElementById('collPanel');
+  const open=panel.style.display==='none';
+  panel.style.display=open?'block':'none';
+  if(open && !collections){
+    document.getElementById('collList').innerHTML='<div class="coll-empty">Loading collections...</div>';
+    try{
+      collections=(await amPost({action:'collections'})).collections;
+      renderCollections();
+    }catch(err){
+      document.getElementById('collList').innerHTML='<div class="coll-empty">Could not load collections: '+esc(err.message)+'</div>';
+    }
+  }
+}
+
+function esc(t){return String(t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+function renderCollections(){
+  if(!collections) return;
+  const q=document.getElementById('collSearch').value.trim().toLowerCase();
+  const shown=collections.filter(c=>c.name.toLowerCase().includes(q));
+  document.getElementById('collList').innerHTML=shown.length?shown.map(c=>{
+    const i=collections.indexOf(c);
+    return `<label class="coll-item"><input type="checkbox" ${selectedCollections.has(c.name)?'checked':''} onchange="pickCollection(${i},this.checked)"><span>${esc(c.name)}</span><span class="cnt">${c.productCount}</span></label>`;
+  }).join(''):'<div class="coll-empty">No matching collections</div>';
+}
+
+function pickCollection(i,on){
+  const name=collections[i].name;
+  on?selectedCollections.add(name):selectedCollections.delete(name);
+  updateCollLabel();
+}
+
+function updateCollLabel(){
+  const n=selectedCollections.size;
+  document.getElementById('collToggleLabel').textContent=n?`${n} collection${n>1?'s':''} selected`:'Collections (optional)';
+  document.getElementById('collToggle').classList.toggle('has-sel',n>0);
+}
+
 async function fetchFromAM(){
   const splitNumbers=raw=>[...new Set(raw.trim().split(/[,\s]+/).map(s=>s.trim()).filter(Boolean))];
   const poNumbers=splitNumbers(document.getElementById('poInput').value);
   const soNumbers=splitNumbers(document.getElementById('soInput').value);
-  if(!poNumbers.length && !soNumbers.length){ showMsg('error','Enter at least one PO or SO number'); return; }
+  const collNames=[...selectedCollections];
+  if(!poNumbers.length && !soNumbers.length && !collNames.length){ showMsg('error','Enter a PO/SO number or pick at least one collection'); return; }
   document.getElementById('fetchBtn').disabled=true;
   document.getElementById('msgBox').textContent='';
-  setStatus('Fetching from ApparelMagic...',20);
+  const label=type=>type==='po'?'PO':'SO';
   try{
-    const res=await fetch('/.netlify/functions/generate-barcode',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({poNumbers,soNumbers})
+    let rows=[],docResults=[],collProductCount=0;
+
+    if(poNumbers.length||soNumbers.length){
+      setStatus('Fetching POs/SOs from ApparelMagic...',10);
+      const body=await amPost({poNumbers,soNumbers});
+      rows=rows.concat(body.rows);
+      docResults=body.docResults;
+    }
+
+    if(collNames.length){
+      setStatus('Finding products in selected collections...',20);
+      const {products}=await amPost({action:'collectionProducts',collections:collNames});
+      collProductCount=products.length;
+      const BATCH=25;
+      for(let i=0;i<products.length;i+=BATCH){
+        setStatus(`Fetching SKUs... ${Math.min(i+BATCH,products.length)} of ${products.length} products`,20+Math.round(i/products.length*20));
+        const body=await amPost({action:'collectionSkus',products:products.slice(i,i+BATCH)});
+        rows=rows.concat(body.rows);
+      }
+    }
+
+    // One row per SKU across everything selected.
+    const seen=new Set();
+    data=rows.filter(r=>{
+      const key=r.Barcode||[r.Style,r.COLOUR,r.SIZE].join('|');
+      if(seen.has(key)) return false;
+      seen.add(key);
+      return true;
     });
-    const body=await res.json();
-    if(!res.ok) throw new Error(body.error||'Request failed');
+    if(!data.length) throw new Error('No line items found for the selection');
 
-    data=body.rows;
-    if(!data.length) throw new Error('No line items found on the given PO/SO number(s)');
-
-    const notFound=body.docResults.filter(r=>!r.found);
-    const found=body.docResults.filter(r=>r.found);
-    const label=type=>type==='po'?'PO':'SO';
-
-    document.getElementById('fileName').value=`${found.map(r=>label(r.type)+'_'+r.number).join('_')}_Barcode_File`;
-    showLoadedData(found.map(r=>label(r.type)+' '+r.number).join(', '));
+    const notFound=docResults.filter(r=>!r.found);
+    const found=docResults.filter(r=>r.found);
+    const labelParts=[...found.map(r=>label(r.type)+' '+r.number)];
+    const nameParts=[...found.map(r=>label(r.type)+'_'+r.number)];
+    if(collNames.length){
+      labelParts.push(collNames.length===1?collNames[0]:collNames.length+' collections');
+      nameParts.push(collNames.length===1?collNames[0].replace(/[^A-Za-z0-9]+/g,'_').replace(/^_+|_+$/g,''):collNames.length+'_Collections');
+    }
+    document.getElementById('fileName').value=`${nameParts.join('_')}_Barcode_File`;
+    showLoadedData(labelParts.join(', '));
     setStatus('Ready to generate',40);
 
-    if(notFound.length){
-      showMsg('error','⚠ Not found: '+notFound.map(r=>label(r.type)+' '+r.number).join(', ')+' — proceeding with the rest');
-    }else{
-      document.getElementById('msgBox').textContent='';
-    }
+    const warnings=[];
+    if(notFound.length) warnings.push('Not found: '+notFound.map(r=>label(r.type)+' '+r.number).join(', '));
+    if(collNames.length && !collProductCount) warnings.push('No products found in the selected collection(s)');
+    if(warnings.length) showMsg('error','⚠ '+warnings.join(' — ')+' — proceeding with the rest');
+    else document.getElementById('msgBox').textContent='';
   }catch(err){
-    setStatus('Enter PO and/or SO numbers to begin',0);
+    setStatus('Enter PO/SO numbers or pick collections to begin',0);
     showMsg('error','Could not fetch from ApparelMagic: '+err.message);
   }finally{
     document.getElementById('fetchBtn').disabled=false;
@@ -330,9 +441,10 @@ function clearFile(){
   document.getElementById('fileInput').value='';
   document.getElementById('poInput').value='';
   document.getElementById('soInput').value='';
+  selectedCollections.clear();updateCollLabel();renderCollections();
   document.getElementById('genBtn').disabled=false;
   document.getElementById('msgBox').textContent='';
-  setStatus(mode==='am'?'Enter PO and/or SO numbers to begin':'Upload a CSV file to begin',0);
+  setStatus(mode==='am'?'Enter PO/SO numbers or pick collections to begin':'Upload a CSV file to begin',0);
 }
 
 async function generate(){
