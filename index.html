@@ -542,7 +542,7 @@ async function generate(){
         {v:(row.SIZE||'').trim(),t:'s'},
         {v:(row.Category||'').trim(),t:'s'},
         {v:barcode,t:'s'},
-        ...wholesale.map(n=>row.Prices&&row.Prices[n]!=null?{v:row.Prices[n],t:'n'}:null),
+        ...wholesale.map(n=>row.Prices&&row.Prices[n]!=null?{v:Math.round(row.Prices[n]*100)/100,t:'n',z:'0.00'}:null),
         {v:aud,t:'n'},{v:nzd,t:'n'}
       ];
       vals.forEach((cell,ci)=>{
