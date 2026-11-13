@@ -136,7 +136,11 @@ function buildPrices(standardPrice, groupRows) {
       if (!(STANDARD_PRICE_LABEL in prices)) add(STANDARD_PRICE_LABEL, g.price);
       continue;
     }
-    const key = name in prices ? `${name} (${g.currency_name || g.currency_id})` : name;
+    // AM shows currency in its own column, so AUD groups are named just "55% MARGIN";
+    // prefix it so headers read "AUD 55% MARGIN" next to "NZD 50% MARGIN".
+    const cur = String(g.currency_name || '').trim();
+    const label = cur && !name.toUpperCase().startsWith(cur.toUpperCase()) ? `${cur} ${name}` : name;
+    const key = label in prices ? `${label} (${g.currency_id})` : label;
     add(key, g.price);
   }
   return prices;
