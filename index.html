@@ -166,7 +166,7 @@ body{
 }
 .price-head button{background:none;border:none;font:inherit;color:#888;cursor:pointer;letter-spacing:inherit;text-transform:inherit}
 .price-head button:hover{color:#111}
-.coll-item .hint{font-size:11px;color:#bbb}
+.coll-item .hint,.price-head .hint{font-size:11px;color:#bbb;letter-spacing:0;text-transform:none}
 #priceList{max-height:320px}
 .file-loaded-row{
   display:flex;align-items:center;gap:8px;
@@ -230,7 +230,7 @@ body{
 
   <div id="nameRow" style="display:none;width:100%">
     <div class="coll-panel" id="pricePanel" style="display:none">
-      <div class="price-head"><span>Wholesale prices</span><button type="button" id="priceAllBtn" onclick="toggleAllPrices()">Select all</button></div>
+      <div class="price-head"><span>Wholesale prices <span class="hint" id="priceCount"></span></span><span><button type="button" onclick="setAllPrices(true)">All</button> · <button type="button" onclick="setAllPrices(false)">None</button></span></div>
       <div class="coll-list" id="priceList"></div>
     </div>
     <div class="name-row">
@@ -307,10 +307,11 @@ function loadPriceGroups(){
   const counts=new Map();
   data.forEach(r=>Object.keys(r.Prices||{}).forEach(k=>counts.set(k,(counts.get(k)||0)+1)));
   priceGroups=[...counts].map(([name,count])=>({name,count}))
+    .filter(g=>!/\bRETAIL\b/i.test(g.name)) // retail isn't wholesale; it's already the AUD Price column
     .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
   let saved=[];
   try{ saved=JSON.parse(localStorage.getItem(PRICE_PICKS_KEY)||'[]'); }catch{}
-  selectedPrices=new Set(saved.filter(n=>counts.has(n)));
+  selectedPrices=new Set(saved.filter(n=>priceGroups.some(g=>g.name===n)));
   document.getElementById('pricePanel').style.display=priceGroups.length?'block':'none';
   renderPriceGroups();
 }
@@ -321,7 +322,8 @@ function renderPriceGroups(){
     const cnt=g.count<data.length?`${g.count} of ${data.length} SKUs`:'';
     return `<label class="coll-item"><input type="checkbox" ${selectedPrices.has(g.name)?'checked':''} onchange="pickPrice(${i},this.checked)"><span>${esc(g.name)}${hint}</span><span class="cnt">${cnt}</span></label>`;
   }).join('');
-  document.getElementById('priceAllBtn').textContent=selectedPrices.size===priceGroups.length?'Clear':'Select all';
+  const n=selectedPrices.size;
+  document.getElementById('priceCount').textContent=n?`· ${n} selected`:'· none — file will have no wholesale prices';
 }
 
 function pickPrice(i,on){
@@ -331,8 +333,8 @@ function pickPrice(i,on){
   renderPriceGroups();
 }
 
-function toggleAllPrices(){
-  selectedPrices=selectedPrices.size===priceGroups.length?new Set():new Set(priceGroups.map(g=>g.name));
+function setAllPrices(on){
+  selectedPrices=on?new Set(priceGroups.map(g=>g.name)):new Set();
   savePricePicks();
   renderPriceGroups();
 }
@@ -519,8 +521,9 @@ async function generate(){
     const wb=XLSX.utils.book_new();
     const ws={};
     const wholesale=priceGroups.map(g=>g.name).filter(n=>selectedPrices.has(n));
-    ws['!cols']=[{wch:17.16},{wch:25.66},{wch:18.83},{wch:8},{wch:14},{wch:16.83},{wch:16.5},{wch:16.5},...wholesale.map(()=>({wch:18}))];
-    const headers=['Product','Description','COLOUR','SIZE','Category','Barcode','AUD Price','NZD Price',...wholesale];
+    // Wholesale columns sit between Barcode and the retail AUD/NZD prices.
+    ws['!cols']=[{wch:17.16},{wch:25.66},{wch:18.83},{wch:8},{wch:14},{wch:16.83},...wholesale.map(()=>({wch:26})),{wch:16.5},{wch:16.5}];
+    const headers=['Product','Description','COLOUR','SIZE','Category','Barcode',...wholesale.map(n=>'Wholesale '+n),'AUD Price','NZD Price'];
     const cc=new Set(headers.map((_,i)=>i).filter(i=>i>=5));
     headers.forEach((h,ci)=>{
       const addr=XLSX.utils.encode_cell({r:0,c:ci});
@@ -539,8 +542,8 @@ async function generate(){
         {v:(row.SIZE||'').trim(),t:'s'},
         {v:(row.Category||'').trim(),t:'s'},
         {v:barcode,t:'s'},
-        {v:aud,t:'n'},{v:nzd,t:'n'},
-        ...wholesale.map(n=>row.Prices&&row.Prices[n]!=null?{v:row.Prices[n],t:'n'}:null)
+        ...wholesale.map(n=>row.Prices&&row.Prices[n]!=null?{v:row.Prices[n],t:'n'}:null),
+        {v:aud,t:'n'},{v:nzd,t:'n'}
       ];
       vals.forEach((cell,ci)=>{
         if(!cell) return; // no price in this group for the style: leave the cell empty
