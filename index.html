@@ -523,7 +523,7 @@ async function generate(){
     const wholesale=priceGroups.map(g=>g.name).filter(n=>selectedPrices.has(n));
     // Wholesale columns sit between Barcode and the retail AUD/NZD prices.
     ws['!cols']=[{wch:17.16},{wch:25.66},{wch:18.83},{wch:8},{wch:14},{wch:16.83},...wholesale.map(()=>({wch:26})),{wch:16.5},{wch:16.5}];
-    const headers=['Product','Description','COLOUR','SIZE','Category','Barcode',...wholesale.map(n=>'Wholesale '+n),'AUD Price','NZD Price'];
+    const headers=['Product','Description','COLOUR','SIZE','Category','Barcode',...wholesale.map(n=>'Wholesale '+n),'RRP AUD Price','RRP NZD Price'];
     const cc=new Set(headers.map((_,i)=>i).filter(i=>i>=5));
     headers.forEach((h,ci)=>{
       const addr=XLSX.utils.encode_cell({r:0,c:ci});
