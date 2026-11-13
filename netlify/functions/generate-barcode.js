@@ -13,6 +13,10 @@
  *   action "collectionProducts" -> products in the chosen collection(s)
  *   action "collectionSkus"     -> barcode rows for a batch of those products
  *
+ * Every row also carries `Prices`: the style's wholesale prices keyed by
+ * column name (its Standard Price plus each ApparelMagic price group from
+ * product_prices/), so the browser can offer them as optional columns.
+ *
  * Auth: GET params time=<unix_ts>&token=<APPAREL_MAGIC_TOKEN>
  * Subdomain: APPAREL_MAGIC_SUBDOMAIN (bare subdomain, e.g. "kohindustries")
  */
@@ -21,6 +25,13 @@ const MIN_PAGE_SIZE = 10;
 const PRODUCT_PAGE_SIZE = 1000;
 const SKU_BATCH_LIMIT = 40;
 const COLLECTION_FIELD = 'group';
+// ApparelMagic's "Standard Price" on a style. At WNDRR it is the AUD 50% margin
+// wholesale price; every other wholesale price is a named price group. AM's docs
+// show it can also come back from product_prices/ as a default-named group, so
+// either source lands in the same column.
+const STANDARD_PRICE_FIELD = 'price';
+const STANDARD_PRICE_LABEL = 'AUD 50% MARGIN';
+const STANDARD_GROUP_NAME = /^(default apparelmagic wholesale price|standard price)$/i;
 
 const DOC_TYPES = {
   po: { endpoint: 'purchase_orders', idField: 'purchase_order_id', itemsField: 'purchase_order_items', label: 'PO' },
@@ -95,6 +106,42 @@ function reply(statusCode, obj) {
   return { statusCode, body: JSON.stringify(obj) };
 }
 
+async function priceGroupsForProduct(subdomain, token, productId) {
+  const data = await amGet(subdomain, token, 'product_prices', {
+    'parameters[0][field]': 'product_id',
+    'parameters[0][operator]': '=',
+    'parameters[0][value]': productId,
+    'pagination[page_size]': 100,
+  });
+  const rows = data.response || [];
+  // If the filter were ignored we'd silently get other styles' prices; fail loudly instead.
+  if (rows.some((r) => String(r.product_id) !== String(productId))) {
+    throw new Error('AM API product_prices ignored the product_id filter');
+  }
+  return rows;
+}
+
+// { 'AUD 50% MARGIN': 54.52, 'AUD 55% MARGIN': 49.07, ... } — zero/blank prices are left out.
+function buildPrices(standardPrice, groupRows) {
+  const prices = {};
+  const add = (key, value) => {
+    const n = parseFloat(value);
+    if (n > 0) prices[key] = n;
+  };
+  add(STANDARD_PRICE_LABEL, standardPrice);
+  for (const g of groupRows) {
+    const name = String(g.price_group || '').trim();
+    if (!name) continue;
+    if (STANDARD_GROUP_NAME.test(name)) {
+      if (!(STANDARD_PRICE_LABEL in prices)) add(STANDARD_PRICE_LABEL, g.price);
+      continue;
+    }
+    const key = name in prices ? `${name} (${g.currency_name || g.currency_id})` : name;
+    add(key, g.price);
+  }
+  return prices;
+}
+
 async function listCollections(subdomain, token) {
   const products = await amGetAll(subdomain, token, 'products');
   const counts = new Map();
@@ -123,6 +170,7 @@ async function listCollectionProducts(subdomain, token, collections) {
           description: p.description || '',
           category: p.category || '',
           retail_price: p.retail_price || '',
+          standard_price: p[STANDARD_PRICE_FIELD] || '',
         });
       }
     }
@@ -132,12 +180,16 @@ async function listCollectionProducts(subdomain, token, collections) {
 
 async function skusForProducts(subdomain, token, products) {
   const perProduct = await mapWithConcurrency(products, 8, async (product) => {
-    const data = await amGet(subdomain, token, 'inventory', {
-      'parameters[0][field]': 'product_id',
-      'parameters[0][operator]': '=',
-      'parameters[0][value]': product.product_id,
-      'pagination[page_size]': 100,
-    });
+    const [data, groupRows] = await Promise.all([
+      amGet(subdomain, token, 'inventory', {
+        'parameters[0][field]': 'product_id',
+        'parameters[0][operator]': '=',
+        'parameters[0][value]': product.product_id,
+        'pagination[page_size]': 100,
+      }),
+      priceGroupsForProduct(subdomain, token, product.product_id),
+    ]);
+    const prices = buildPrices(product.standard_price, groupRows);
     // Inventory can return one row per warehouse; keep one row per SKU.
     const bySku = new Map();
     for (const sku of data.response || []) {
@@ -153,6 +205,7 @@ async function skusForProducts(subdomain, token, products) {
       Category: product.category || '',
       Barcode: sku.upc_display || sku.upc || '',
       'Retail Price': sku.retail_price || product.retail_price || '',
+      Prices: prices,
     }));
   });
   return perProduct.flat();
@@ -253,21 +306,24 @@ exports.handler = async (event) => {
     }
     const uniqueItems = Array.from(bySkuId.values());
 
-    // Look up category + retail_price per unique product_id.
-    const productIds = Array.from(new Set(uniqueItems.map((i) => i.product_id).filter(Boolean)));
+    // Look up category, retail price and wholesale prices per unique product_id.
+    const productIds = Array.from(new Set(uniqueItems.map((i) => String(i.product_id || '')).filter(Boolean)));
     const productLookups = await mapWithConcurrency(productIds, 8, async (productId) => {
-      const data = await amGet(subdomain, token, 'products', {
-        product_id: productId,
-        'pagination[page_size]': MIN_PAGE_SIZE,
-      });
-      const rows = data.response || [];
-      return rows.find((r) => String(r.product_id) === productId) || null;
+      const [data, groupRows] = await Promise.all([
+        amGet(subdomain, token, 'products', {
+          product_id: productId,
+          'pagination[page_size]': MIN_PAGE_SIZE,
+        }),
+        priceGroupsForProduct(subdomain, token, productId),
+      ]);
+      const product = (data.response || []).find((r) => String(r.product_id) === productId) || null;
+      return { product, prices: buildPrices(product?.[STANDARD_PRICE_FIELD], groupRows) };
     });
     const productById = new Map();
     productIds.forEach((id, i) => productById.set(id, productLookups[i]));
 
     const rows = uniqueItems.map((item) => {
-      const product = productById.get(item.product_id) || {};
+      const { product = {}, prices = {} } = productById.get(String(item.product_id || '')) || {};
       return {
         Style: item.style_number || '',
         Description: item.description || product.description || '',
@@ -276,6 +332,7 @@ exports.handler = async (event) => {
         Category: product.category || '',
         Barcode: item.upc_display || item.upc || '',
         'Retail Price': product.retail_price || '',
+        Prices: prices,
       };
     });
 

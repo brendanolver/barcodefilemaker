@@ -159,6 +159,15 @@ body{
 .coll-item:hover{background:#f7f7f7}
 .coll-item .cnt{margin-left:auto;font-size:11px;color:#bbb}
 .coll-empty{padding:.75rem 1rem;font-size:12px;color:#aaa;text-align:center}
+.price-head{
+  padding:.55rem 1rem;border-bottom:1px solid #eee;
+  font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#888;
+  display:flex;justify-content:space-between;align-items:center;
+}
+.price-head button{background:none;border:none;font:inherit;color:#888;cursor:pointer;letter-spacing:inherit;text-transform:inherit}
+.price-head button:hover{color:#111}
+.coll-item .hint{font-size:11px;color:#bbb}
+#priceList{max-height:320px}
 .file-loaded-row{
   display:flex;align-items:center;gap:8px;
   padding:.4rem .9rem .4rem 1.1rem;
@@ -220,6 +229,10 @@ body{
   </div>
 
   <div id="nameRow" style="display:none;width:100%">
+    <div class="coll-panel" id="pricePanel" style="display:none">
+      <div class="price-head"><span>Wholesale prices</span><button type="button" id="priceAllBtn" onclick="toggleAllPrices()">Select all</button></div>
+      <div class="coll-list" id="priceList"></div>
+    </div>
     <div class="name-row">
       <input type="text" id="fileName" placeholder="Output filename (e.g. PO_2081_Barcode_File)">
       <span class="ext">.xlsx</span>
@@ -281,6 +294,51 @@ function showLoadedData(label){
   document.getElementById('fileLoaded').style.display='block';
   document.getElementById('nameRow').style.display='block';
   document.getElementById('genRow').style.display='block';
+  loadPriceGroups();
+}
+
+// Wholesale price groups found on the loaded rows (ApparelMagic mode only), and the user's picks.
+const STANDARD_PRICE_LABEL='AUD 50% MARGIN';
+const PRICE_PICKS_KEY='barcodefilemaker.priceGroups';
+let priceGroups=[]; // [{name,count}]
+let selectedPrices=new Set();
+
+function loadPriceGroups(){
+  const counts=new Map();
+  data.forEach(r=>Object.keys(r.Prices||{}).forEach(k=>counts.set(k,(counts.get(k)||0)+1)));
+  priceGroups=[...counts].map(([name,count])=>({name,count}))
+    .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
+  let saved=[];
+  try{ saved=JSON.parse(localStorage.getItem(PRICE_PICKS_KEY)||'[]'); }catch{}
+  selectedPrices=new Set(saved.filter(n=>counts.has(n)));
+  document.getElementById('pricePanel').style.display=priceGroups.length?'block':'none';
+  renderPriceGroups();
+}
+
+function renderPriceGroups(){
+  document.getElementById('priceList').innerHTML=priceGroups.map((g,i)=>{
+    const hint=g.name===STANDARD_PRICE_LABEL?' <span class="hint">Standard price</span>':'';
+    const cnt=g.count<data.length?`${g.count} of ${data.length} SKUs`:'';
+    return `<label class="coll-item"><input type="checkbox" ${selectedPrices.has(g.name)?'checked':''} onchange="pickPrice(${i},this.checked)"><span>${esc(g.name)}${hint}</span><span class="cnt">${cnt}</span></label>`;
+  }).join('');
+  document.getElementById('priceAllBtn').textContent=selectedPrices.size===priceGroups.length?'Clear':'Select all';
+}
+
+function pickPrice(i,on){
+  const name=priceGroups[i].name;
+  on?selectedPrices.add(name):selectedPrices.delete(name);
+  savePricePicks();
+  renderPriceGroups();
+}
+
+function toggleAllPrices(){
+  selectedPrices=selectedPrices.size===priceGroups.length?new Set():new Set(priceGroups.map(g=>g.name));
+  savePricePicks();
+  renderPriceGroups();
+}
+
+function savePricePicks(){
+  try{ localStorage.setItem(PRICE_PICKS_KEY,JSON.stringify([...selectedPrices])); }catch{}
 }
 
 let collections=null; // [{name,productCount}] once loaded
@@ -444,6 +502,8 @@ function clearFile(){
   selectedCollections.clear();updateCollLabel();renderCollections();
   document.getElementById('genBtn').disabled=false;
   document.getElementById('msgBox').textContent='';
+  priceGroups=[];
+  document.getElementById('pricePanel').style.display='none';
   setStatus(mode==='am'?'Enter PO/SO numbers or pick collections to begin':'Upload a CSV file to begin',0);
 }
 
@@ -458,9 +518,10 @@ async function generate(){
     await new Promise(r=>setTimeout(r,30));
     const wb=XLSX.utils.book_new();
     const ws={};
-    ws['!cols']=[{wch:17.16},{wch:25.66},{wch:18.83},{wch:8},{wch:14},{wch:16.83},{wch:16.5},{wch:16.5}];
-    const headers=['Product','Description','COLOUR','SIZE','Category','Barcode','AUD Price','NZD Price'];
-    const cc=new Set([5,6,7]);
+    const wholesale=priceGroups.map(g=>g.name).filter(n=>selectedPrices.has(n));
+    ws['!cols']=[{wch:17.16},{wch:25.66},{wch:18.83},{wch:8},{wch:14},{wch:16.83},{wch:16.5},{wch:16.5},...wholesale.map(()=>({wch:18}))];
+    const headers=['Product','Description','COLOUR','SIZE','Category','Barcode','AUD Price','NZD Price',...wholesale];
+    const cc=new Set(headers.map((_,i)=>i).filter(i=>i>=5));
     headers.forEach((h,ci)=>{
       const addr=XLSX.utils.encode_cell({r:0,c:ci});
       ws[addr]={v:h,t:'s',s:{font:{name:'Aptos Narrow',sz:12},alignment:cc.has(ci)?{horizontal:'center'}:{}}};
@@ -478,14 +539,16 @@ async function generate(){
         {v:(row.SIZE||'').trim(),t:'s'},
         {v:(row.Category||'').trim(),t:'s'},
         {v:barcode,t:'s'},
-        {v:aud,t:'n'},{v:nzd,t:'n'}
+        {v:aud,t:'n'},{v:nzd,t:'n'},
+        ...wholesale.map(n=>row.Prices&&row.Prices[n]!=null?{v:row.Prices[n],t:'n'}:null)
       ];
       vals.forEach((cell,ci)=>{
+        if(!cell) return; // no price in this group for the style: leave the cell empty
         const addr=XLSX.utils.encode_cell({r:ri,c:ci});
         ws[addr]={...cell,s:{font:{name:'Aptos Narrow',sz:12},alignment:cc.has(ci)?{horizontal:'center'}:{}}};
       });
     }
-    ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:data.length,c:7}});
+    ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:data.length,c:headers.length-1}});
     XLSX.utils.book_append_sheet(wb,ws,'Barcode Sheet');
     setStatus('Writing file...',95);
     await new Promise(r=>setTimeout(r,10));
