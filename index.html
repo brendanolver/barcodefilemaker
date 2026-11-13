@@ -543,7 +543,7 @@ async function generate(){
         {v:(row.Category||'').trim(),t:'s'},
         {v:barcode,t:'s'},
         ...wholesale.map(n=>row.Prices&&row.Prices[n]!=null?{v:Math.round(row.Prices[n]*100)/100,t:'n',z:'0.00'}:null),
-        {v:aud,t:'n'},{v:nzd,t:'n'}
+        {v:Math.round(aud*100)/100,t:'n',z:'0.00'},{v:nzd,t:'n',z:'0.00'}
       ];
       vals.forEach((cell,ci)=>{
         if(!cell) return; // no price in this group for the style: leave the cell empty
